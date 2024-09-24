@@ -35,6 +35,7 @@
 *.dta
 *.shp
 *.dbf
+*.docx
 
 #nothing from these folders
 AI/*
