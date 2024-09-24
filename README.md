@@ -1,2 +1,8 @@
+
 # training_day
-Repo to explore the faux MSD
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+The goal of training_day is to ...
+

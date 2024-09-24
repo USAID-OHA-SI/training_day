@@ -1,0 +1,819 @@
+---
+title: "MSD Analytic Questions"
+author: "Allison Towey"
+date: "2024-09-18"
+output:
+  html_document:
+    keep_tex: true
+    warning: false
+---
+
+```{r setup, include=FALSE, ignore_warnings=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(themask)
+library(glamr)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(patchwork)
+library(zoo)
+library(glitr)
+library(systemfonts)
+```
+
+```{r}
+data <- read.table("MER_Structured_TRAINING_Datasets_PSNU_IM_FY59-62_20240816_v1_1.txt", header = TRUE, sep = "\t")
+```
+
+## 1: Which partner should we focus on with lower target achievement in test positivity for the year?
+
+When we take a look at prime partners’ `HTS_TST_POS` reported versus their targets for the current year (`FY2061`), we see the following:
+
+```{r}
+# Filter to the current year (2061)
+filtered_data_q1 <- data %>%
+  filter(fiscal_year == 2061, indicator == "HTS_TST_POS")
+
+# Find reported HTS_TST_POS versus targets
+summary_table_q1 <- filtered_data_q1 %>%
+  group_by(prime_partner_name) %>%
+  summarise(
+    PSNUs = paste(unique(psnu), collapse = ", "),
+    Targets = sum(targets, na.rm = TRUE),
+    Cumulative = sum(cumulative, na.rm = TRUE),
+    Achievement = if_else(
+      Targets > 0,
+      round(Cumulative / Targets * 100, 0),
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(desc(Achievement)) %>%
+  mutate(Achievement = ifelse(is.na(Achievement), "No targets", paste0(Achievement, "%")))
+```
+
+**`FY2061` (through `Q3`) Achievement of `HTS_TST_POS` Targets by Prime Partner**
+
+```{r echo=FALSE}
+print(summary_table_q1)
+```
+
+This is through `Q3` of the year, as there is no `Q4` data available. With a cursory glance, we can see that:
+
+- Three of the partners (`Jumbo Shrimp` and `Pelicans`(*both operating in `Winston-Salem`*) and `SeaWolves`) did not have targets in the data. 
+- Eight of 12 (`75%`) of our prime partners with targets achieved 100% or more of their targets for `HTS_TST_POS`.
+- Of the remaining four partners who did not meet their targets, two are >95%, indicating they are very close to their targets. 
+
+The two partners with lower rates are `Dash`(`30%`) and `Cardinals`(`52%`). To view this in context, we can also explore the previous year's data. The previous year (`FY2060`), `Cardinals` had the lowest achievement at `19%`(*excluding `Red Sox` who did not report any `HTS_TST_POS` results*). This year, `FY2061`, `Dash` has the lowest achievement of target at `30%`, which is down from `56%` in `FY2060`.
+
+```{r}
+# Do the same for 2060 data
+filtered_data_2060 <- data %>%
+  filter(fiscal_year == 2060, indicator == "HTS_TST_POS")
+
+summary_table_2060 <- filtered_data_2060 %>%
+  group_by(prime_partner_name) %>%
+  summarise(
+    PSNUs = paste(unique(psnu), collapse = ", "),
+    Targets = sum(targets, na.rm = TRUE),
+    Cumulative = sum(cumulative, na.rm = TRUE),
+    Achievement = if_else(
+      Targets > 0,
+      round(Cumulative / Targets * 100, 0),
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(desc(Achievement)) %>%
+  mutate(Achievement = ifelse(is.na(Achievement), "No targets", paste0(Achievement, "%")))
+```
+**`FY2060` Achievement of `HTS_TST_POS` Targets by Prime Partner**
+```{r, echo=FALSE}
+print(summary_table_2060)
+```
+
+To understand where the `Dash`'s issues may be, we can also take a look at which PSNUs they are operating in. `Dash` appears to be closer to its targets in the `Salt Lake` PSNU than the `Sugar Land` PSNU:
+
+```{r}
+# Filter to Dash only and group by PSNU
+summary_table_q1_DASH_PSNU <- data %>%
+  filter(
+    fiscal_year == 2061,
+    indicator == "HTS_TST_POS",
+    prime_partner_name == "Dash"
+  ) %>%
+  group_by(psnu) %>%
+  summarise(
+    Targets = sum(targets, na.rm = TRUE),
+    Cumulative = sum(cumulative, na.rm = TRUE),
+    Achievement = if_else(
+      Targets > 0,
+      round(Cumulative / Targets * 100, 0),
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(desc(Achievement)) %>%
+  mutate(Achievement = paste0(Achievement, "%"))
+```
+
+```{r echo=FALSE}
+print(summary_table_q1_DASH_PSNU)
+```
+
+Zooming out, we also will want to consider both the percentage of target achievement and the scale of the operation. 
+
+- For example, if Partner A has a target of 20 and reports 10, they have a 50% achievement rate. While this seems significant, the overall impact is relatively small due to the low target number.
+- In contrast, Partner B has a target of 10,000 and reports 6,000, resulting in a 60% achievement rate. Although this rate is higher than Partner A's, the absolute gap in performance is much larger. The magnitude of the shortfall for Partner B is much more substantial.
+
+We can normalize performance based on the size of the operation to ensure that we direct resources effectively. By min-max scaling our targets and cumulative scores across partners, I created a simple composite score equation:
+
+\[
+\text{Partner Composite Score} = (\text{Normalized Target} + \text{Normalized Cumulative}) \times (1 - \text{Achievement Ratio})
+\]
+
+This formula combines the scaled values of targets and cumulative results with the inverse of the achievement ratio, where higher composite scores (indicating worse performance) are driven by high normalized targets and cumulative results paired with a low achievement ratio. This method allows us to identify partners with significant operational scope who are underperforming, helping prioritize interventions and allocate resources efficiently.
+
+```{r}
+# Grab min and maxes for targets and cumulative HTS_TST_POS
+min_targets <- min(summary_table_q1$Targets[summary_table_q1$Targets > 0], na.rm = TRUE)
+max_targets <- max(summary_table_q1$Targets[summary_table_q1$Targets > 0], na.rm = TRUE)
+min_cumulative <- min(summary_table_q1$Cumulative[summary_table_q1$Cumulative > 0], na.rm = TRUE)
+max_cumulative <- max(summary_table_q1$Cumulative[summary_table_q1$Cumulative > 0], na.rm = TRUE)
+
+# Normalization function
+normalize <- function(value, min_value, max_value) {
+  (value - min_value) / (max_value - min_value)
+}
+
+# Normalize the table and calculate the score
+normalized_summary_table_q1 <- summary_table_q1 %>%
+  mutate(
+    Normalized_Targets = normalize(Targets, min_targets, max_targets),
+    Normalized_Cumulative = normalize(Cumulative, min_cumulative, max_cumulative),
+    Achievement_Ratio = if_else(Targets > 0,
+      Cumulative / Targets,
+      NA_real_
+    ),
+    Achievement_Ratio = if_else(is.na(Achievement_Ratio), 1, Achievement_Ratio),
+    Score = (Normalized_Targets + Normalized_Cumulative) * (1 - Achievement_Ratio)
+  ) %>%
+  arrange(desc(Score))
+```
+
+```{r, echo=FALSE}
+print(normalized_summary_table_q1)
+```
+
+In this instance, it still looks like we should prioritize **`Dash`** given `FY2061` data, as they have the highest composite score. This indicates that although their normalized targets and cumulative results are relatively high, their achievement ratio is low, suggesting room for improvement.
+
+#### **<span style="color:#2057a7"> Question: Is this normalization method commonly used, and should I have applied it in this instance? It felt like just going off of percentage was not taking into account scale. Would love to know more here.</span>**
+
+
+## 2. What share of total and positive tests are from index testing in the latest quarter?
+
+To answer this question, we can look at modality disaggregation for `HTS_TST` and `HTS_TST_POS`.
+
+```{r}
+# Pivot the table into longer format
+data_long <- data %>%
+  pivot_longer(
+    cols = starts_with("qtr"),
+    names_to = "quarter", # New column for the quarter
+    values_to = "value" # New column for the values
+  ) %>%
+  filter(!is.na(value)) %>%
+  mutate(
+    quarter = gsub("qtr", "", quarter) # Remove "qtr" from quarter names (now in integer format)
+  )
+
+# Group by indicator and find instances of HTS_TST and HTS_TST_POS that are from the index modality
+summary_table_q2 <- data_long %>%
+  filter(
+    fiscal_year == 2061,
+    indicator %in% c("HTS_TST", "HTS_TST_POS"),
+    quarter == 3
+  ) %>% # Filter to most recent quarter (2061 Q3)
+  group_by(indicator) %>%
+  summarise(
+    All = sum(value, na.rm = TRUE), # Sum for all modalities (denominator)
+    Index_Only = sum(if_else(modality == "Index", value, 0), na.rm = TRUE), # Sum for only 'Index' modality (numerator)
+    Percentage_From_Index = paste0(round((Index_Only / All) * 100, 2), "%")
+  ) %>%
+  ungroup()
+```
+
+**`FY2061 Q3` `HTS_TST` & `HTS_TST_POS` Values by Index Modality**
+
+```{r echo=FALSE}
+summary_table_q2
+```
+We see that in the latest quarter (`FY2061 Q3`), **`1.92%`** of `HTS_TST` are from Index testing and **`14.86%`** of `HTS_TST_POS` are from Index testing.
+
+#### **<span style="color:#2057a7"> Question: What about Active Index and IndexMod? Should I have included those as 'Index' modalities?</span>**
+
+## 3. Which sub-national units (SNUs) have seen a decline in testing over the last few quarters but an increase in positivity?
+
+We can take a look at testing and positive testing trends over the most recent few quarters.
+```{r}
+# Grab two years of recent data to analyze trends
+relevant_quarters <- c("2059Q3", "2059Q4", "2060Q1", "2060Q2", "2060Q3", "2060Q4", "2061Q1", "2061Q2", "2061Q3")
+
+filtered_data <- data_long %>%
+  filter(paste(fiscal_year, quarter, sep = "Q") %in% relevant_quarters)
+
+# Pivot the data to have separate columns for HTS_TST and HTS_TST_POS
+summary_data_q3 <- filtered_data %>%
+  pivot_wider(names_from = indicator, values_from = value, values_fill = list(value = 0)) %>%
+  group_by(snu1, fiscal_year, quarter) %>%
+  summarise(
+    Total_Testing = sum(HTS_TST, na.rm = TRUE),
+    Total_Positive = sum(HTS_TST_POS, na.rm = TRUE),
+    Total_Positivity_Ratio = (sum(HTS_TST_POS, na.rm = TRUE) / sum(HTS_TST, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Year_Quarter = paste(fiscal_year, quarter, sep = "_Q")
+  ) %>%
+  select(snu1, Year_Quarter, Total_Testing, Total_Positive, Total_Positivity_Ratio)
+
+summary_data_q3_display <- summary_data_q3 %>%
+  mutate(
+    Total_Positivity_Ratio = scales::percent(round(Total_Positivity_Ratio, 4))
+  )
+```
+
+```{r echo=FALSE}
+print(summary_data_q3)
+```
+Visualizing the trends in each SNU:
+```{r}
+library(scales)
+create_plot <- function(snu_name, value_col, secondary_col, y_label, sec_y_label, color_map, is_percentage = FALSE) {
+  data_snu <- summary_data_q3 %>% filter(snu1 == snu_name)
+
+  # Calculate scaling factor for the secondary axis
+  max_testing <- max(data_snu$Total_Testing, na.rm = TRUE)
+  max_value <- max(data_snu[[secondary_col]], na.rm = TRUE)
+  scaling_factor <- max_testing / max_value
+
+  # Create a combined label with year and quarter
+  data_snu <- data_snu %>%
+    mutate(Year = sub("_(.*)", "", Year_Quarter),
+           Quarter = sub("(.*)_", "", Year_Quarter),
+           Combined_Label = paste0(Year, "\n", Quarter)) %>%  # Year on second line
+    arrange(factor(Quarter, levels = c("Q1", "Q2", "Q3", "Q4")),
+            factor(Year, levels = c("2059", "2060", "2061")))
+
+  ggplot(data_snu, aes(x = Combined_Label)) +
+    geom_line(aes(y = Total_Testing, color = '# Tests'), linewidth = 1, group = 1) +
+    geom_line(aes(y = get(secondary_col) * scaling_factor, color = sec_y_label),
+              linetype = "dashed", linewidth = 1, group = 1) +
+    scale_y_continuous(
+      name = y_label,
+      labels = number_format(),
+      sec.axis = sec_axis(~ . / scaling_factor,
+                          name = sec_y_label,
+                          labels = if (is_percentage) percent_format() else number_format())
+    ) +
+    labs(title = snu_name, x = "", color = "Legend") +
+    theme_minimal() +
+    scale_color_manual(values = color_map) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Adjust x-axis text for better visibility
+    si_style()
+}
+
+
+# Plot by % of Tests that are Positive
+create_plot_pr <- function(snu_name) {
+  create_plot(
+    snu_name, "Total_Testing", "Total_Positivity_Ratio",
+    "# Tests", "% Positive", c("# Tests" = denim, "% Positive" = old_rose), TRUE
+  )
+}
+
+# Plot by Total Number of Positive Tests
+create_plot_num <- function(snu_name) {
+  create_plot(
+    snu_name, "Total_Testing", "Total_Positive",
+    "# Tests", "# Positive", c("# Tests" = denim, "# Positive" = old_rose)
+  )
+}
+
+summary_data_q3$Year_Quarter <- factor(
+  summary_data_q3$Year_Quarter,
+  levels = c("2059_Q3", "2059_Q4", "2060_Q1", "2060_Q2", "2060_Q3", "2060_Q4", "2061_Q1", "2061_Q2", "2061_Q3")
+)
+
+snu_names <- unique(summary_data_q3$snu1)
+```
+
+***Please note, the following charts have dual axes and varying scales.***
+
+**By Positivity Rate**
+```{r}
+# Generate plots for each SNU using the percentage plot function
+plots_pr <- lapply(snu_names, create_plot_pr)
+
+# Combine all plots into a single layout
+combined_plot_pr <- wrap_plots(plots_pr, ncol = 2) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+```
+
+```{r, echo=FALSE, fig.width=14, fig.height=8}
+print(combined_plot_pr)
+```
+
+**By Total # Positive Tests**
+
+```{r}
+# Generate plots for each SNU using the num plot function
+plots_num <- lapply(snu_names, create_plot_num)
+
+# Combine all plots into a single layout
+combined_plot_num <- wrap_plots(plots_num, ncol = 2) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+```
+
+```{r, echo=FALSE, fig.width=14, fig.height=8}
+print(combined_plot_num)
+```
+
+In the time period studied, I do not see any SNU where the number of positive tests or positivity ratio has increased and the total number of tests has decreased.
+
+- *Midwest*: Testing rose sharply and then fell recently. Positivity rate fell.
+
+- *Northwest*: Testing rose sharply and then fell recently. Positivity rate fell.
+
+- *Pacific Coast*: Testing rose. Positivity rate fell.
+
+- *South Atlantic*: Testing rose. Positivity rate had a lot of variation.
+
+We can also try to smooth over any quarter spikes or outliers by calculating moving averages.
+```{r}
+# Calculate 3-quarter moving averages for each SNU
+summary_data_q3 <- summary_data_q3 %>%
+  group_by(snu1) %>%
+  arrange(Year_Quarter) %>%
+  mutate(
+    Testing_MA = rollmean(Total_Testing, k = 3, fill = NA, align = "right"), # 3-quarter moving average for testing
+    Positivity_MA = rollmean(Total_Positivity_Ratio, k = 3, fill = NA, align = "right") # 3-quarter moving average for positivity ratio
+  ) %>%
+  select(snu1, Year_Quarter, Testing_MA, Positivity_MA, Total_Testing, Total_Positivity_Ratio) %>%
+  ungroup()
+
+print(summary_data_q3)
+
+# Calculate trends in moving averages
+decline_in_testing_increase_in_positivity_ma <- summary_data_q3 %>%
+  group_by(snu1) %>%
+  arrange(Year_Quarter) %>%
+  summarise(
+    testing_trend_ma = last(Testing_MA, na.rm = TRUE) - first(Testing_MA, na.rm = TRUE), # Trend in testing moving average
+    positivity_trend_ma = last(Positivity_MA, na.rm = TRUE) - first(Positivity_MA, na.rm = TRUE) # Trend in positivity moving average
+  ) %>%
+  filter(testing_trend_ma < 0 & positivity_trend_ma > 0)
+```
+
+**Moving Averages**
+```{r, echo=FALSE}
+print(decline_in_testing_increase_in_positivity_ma)
+```
+There are no SNUs with a negative trend in testing and positive trend in positivity when looking at moving averages.
+
+```{r, echo=FALSE, warning=FALSE}
+create_plot_q3_ma <- function(snu_name) {
+  data_snu <- summary_data_q3 %>%
+    filter(snu1 == snu_name) %>%
+    filter(!is.na(Total_Testing) & !is.na(Testing_MA) & !is.na(Positivity_MA))
+  
+  data_snu <- data_snu %>%
+    mutate(Year = sub("_(.*)", "", Year_Quarter),
+           Quarter = sub("(.*)_", "", Year_Quarter),
+           Combined_Label = paste0(Year, "\n", Quarter)) %>%  # Year on second line
+    arrange(factor(Quarter, levels = c("Q1", "Q2", "Q3", "Q4")),
+            factor(Year, levels = c("2059", "2060", "2061")))
+
+  # Calculate scaling factor for the secondary axis
+  max_testing <- max(data_snu$Total_Testing, na.rm = TRUE)
+  max_positivity <- max(data_snu$Positivity_MA, na.rm = TRUE)
+  scaling_factor <- max_testing / max_positivity
+
+  ggplot(data_snu, aes(x = Combined_Label)) +
+    geom_line(aes(y = Testing_MA, color = "Testing MA"), linewidth = 1, group = 1) +
+    geom_line(aes(y = Positivity_MA * scaling_factor, color = "Positivity MA"), linetype = "dashed", linewidth = 1, group = 1) +
+    scale_y_continuous(name = "# Tests",
+                       labels = number_format(), 
+                       sec.axis = sec_axis(~ . / scaling_factor, 
+                                           name = "% Positive", 
+                                           labels = scales::percent_format())) +
+    labs(
+      title = snu_name,
+      x = "",
+      color = "Legend"
+    ) +
+    theme_minimal() +
+    scale_color_manual(values = c("Testing MA" = denim, "Positivity MA" = old_rose)) +
+    si_style()
+}
+```
+
+```{r}
+# Generate plots for each SNU using the num plot function
+plots_ma <- lapply(snu_names, function(snu_name) create_plot_q3_ma(snu_name))
+
+# Combine all plots into a single layout
+combined_plot_ma <- wrap_plots(plots_ma, ncol = 2) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+```
+
+```{r, echo=FALSE, fig.width=14, fig.height=8}
+print(combined_plot_ma)
+```
+
+We still do not see any SNUs where there is a decline in testing and an increase in positivity.
+
+#### **<span style="color:#2057a7"> Question: Unless this is a trick question, it looks like I got it wrong. Is there something I am missing?</span>**
+
+## 4. What share of newly initiated patients onto treatment have a CD4 count of less than 200?
+
+```{r}
+# In the data, only 2061 has values for CD4
+data_2061 <- data_long %>%
+  filter(fiscal_year == 2061)
+
+# Total number of newly initiated patients (TX_NEW) with CD4 count < 200
+cumulative_txnew_lessthan200cd4 <- data_2061 %>%
+  filter(indicator == "TX_NEW", otherdisaggregate == "<200 CD4") %>%
+  summarise(Total_Cumulative = sum(value, na.rm = TRUE)) %>%
+  pull(Total_Cumulative)
+
+# Total number of newly initiated patients (TX_NEW) with CD4 count >= 200
+cumulative_txnew_greaterthan200cd4 <- data_2061 %>%
+  filter(indicator == "TX_NEW", otherdisaggregate == ">=200 CD4") %>%
+  summarise(Total_Cumulative = sum(value, na.rm = TRUE)) %>%
+  pull(Total_Cumulative)
+
+# Total number of newly initiated patients (TX_NEW)
+total_tx_new <- data_2061 %>%
+  filter(indicator == "TX_NEW") %>%
+  summarise(Total_New = sum(value, na.rm = TRUE)) %>%
+  pull(Total_New)
+
+# Comparison of CD4 counts
+cumulative_txnew_cd4_comparison <- data_2061 %>%
+  filter(indicator == "TX_NEW", otherdisaggregate %in% c("<200 CD4", ">=200 CD4")) %>%
+  group_by(fiscal_year, otherdisaggregate) %>%
+  summarise(
+    Total_CD4_Count = sum(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ungroup() %>%
+  pivot_wider(names_from = otherdisaggregate, values_from = Total_CD4_Count, values_fill = list(Total_CD4_Count = 0)) %>%
+  mutate(
+    Total_Treatment_with_CD4_disagg = `<200 CD4` + `>=200 CD4`,
+    Percentage_Less_Than_200_CD4 = round((`<200 CD4` / Total_Treatment_with_CD4_disagg) * 100, 2),
+    Percentage_Greater_Than_Equal_200_CD4 = round((`>=200 CD4` / Total_Treatment_with_CD4_disagg) * 100, 2)
+  )
+
+# Combine the comparison and total
+cumulative_txnew_cd4_comparison <- cumulative_txnew_cd4_comparison %>%
+  mutate(Total_TX_New = total_tx_new)
+```
+
+```{r, echo=FALSE}
+# Display the results
+print(cumulative_txnew_cd4_comparison)
+```
+
+```{r}
+total_below_200 <- cumulative_txnew_cd4_comparison$`<200 CD4`
+below_200_percentage <- paste0(cumulative_txnew_cd4_comparison$Percentage_Less_Than_200_CD4, "%")
+
+total_percentage_both_categories <- paste0(
+  round(((cumulative_txnew_lessthan200cd4 + cumulative_txnew_greaterthan200cd4) / total_tx_new) * 100, 2),
+  "%"
+)
+```
+It appears that ``r total_below_200`` newly initiated patients had a CD4 <200 in `FY2061`. This is ``r below_200_percentage`` of newly initiated patients that have a reported CD4 in the data.
+
+Importantly, only ``r total_percentage_both_categories`` have a CD4 value in 2061 (the only year with CD4 disaggregated). As a note, the only year that reports this data is `FY2061`. We can look at the trends by quarter within the year as well.
+
+```{r}
+# Calculate cumulative CD4 counts for newly initiated patients in 2061
+cumulative_txnew_cd4_comparison <- data_2061 %>%
+  filter(indicator == "TX_NEW", otherdisaggregate %in% c("<200 CD4", ">=200 CD4")) %>%
+  group_by(fiscal_year, quarter, otherdisaggregate) %>%
+  summarise(
+    Total_CD4_Count = sum(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ungroup() %>%
+  pivot_wider( # Reshape data to wide format with separate columns for each CD4 category
+    names_from = otherdisaggregate,
+    values_from = Total_CD4_Count,
+    values_fill = list(Total_CD4_Count = 0)
+  ) %>%
+  mutate( # Calculate percentage of patients in each CD4 category
+    Percentage_Less_Than_200_CD4 = paste0(
+      round((`<200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 2), "%"
+    ),
+    Percentage_Greater_Than_Equal_200_CD4 = paste0(
+      round((`>=200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 2), "%"
+    )
+  )
+```
+
+```{r, echo=FALSE}
+print(cumulative_txnew_cd4_comparison)
+```
+#### **<span style="color:#2057a7">Question: I am not sure I did this all right. Should I be comparing the <200 and >=200 CD4 disaggregates like this? Why do only so few have this disagg?</span>**
+
+## 5. Which age bands have had two or more quarters with declining net new on treatment?
+
+Two or more total quarters with declining net new on treatment:
+```{r}
+# Calculate net new patient counts and identify declining trends by age
+net_new_declining <- data_long %>%
+  mutate(Year_Quarter = paste(fiscal_year, quarter, sep = "_Q")) %>%
+  filter(indicator == "TX_NET_NEW") %>%
+  group_by(ageasentered, Year_Quarter) %>%
+  summarise(
+    Value = sum(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Is_Negative = Value < 0) # Create flag for if TX_NET_NEW is negative
+
+# Count the number of quarters with negative values for each age group
+declining_counts <- net_new_declining %>%
+  group_by(ageasentered) %>%
+  summarise(
+    Declining_Quarter_Count = sum(Is_Negative),
+    .groups = "drop"
+  ) %>%
+  filter(Declining_Quarter_Count >= 2) # Filter where there are any two quarters with negative TX_NET_NEW
+```
+
+These age bands have had at least 2 quarters in the data with declining `TX_NET_NEW`:
+```{r, echo=FALSE}
+print(declining_counts)
+```
+
+We can also check for consecutive declines.
+```{r}
+# Identify consecutive declines in net new patient counts by age group
+consecutive_declines <- net_new_declining %>%
+  arrange(ageasentered, Year_Quarter) %>%
+  group_by(ageasentered) %>%
+  mutate(
+    # Check if the current and previous quarters are negative
+    Consecutive_Decline = ifelse(Is_Negative, lag(Is_Negative, default = FALSE), FALSE) & Is_Negative,
+    # Create a group for each series of consecutive declines
+    Decline_Group = cumsum(!Consecutive_Decline)
+  ) %>%
+  filter(Is_Negative) %>%
+  group_by(ageasentered, Decline_Group) %>% # Group by age and decline group
+  summarise(
+    Consecutive_Decline_Count = n(),
+    Year_Quarter_List = paste(Year_Quarter, collapse = ", "), # List of quarters
+    .groups = "drop"
+  ) %>%
+  filter(Consecutive_Decline_Count >= 2) %>% # Keep at least 2 declines
+  select(ageasentered, Consecutive_Decline_Count, Year_Quarter_List)
+```
+
+Every time an age group has two or more quarters in decline in a row:
+```{r, echo=FALSE}
+print(consecutive_declines)
+```
+
+**Age Bands with Two of More Total Declining Quarters**
+```{r, echo=FALSE}
+print(unique(declining_counts$ageasentered))
+```
+
+**Age Bands with Two or More Consecutive Declines**
+```{r, echo=FALSE}
+print(unique(consecutive_declines$ageasentered))
+```
+
+## 6. Which sub-national units (SNUs) had net new on treatment volumes below those newly on treatment for the year?
+
+```{r, warning=FALSE}
+# Compare net new patients to newly initiated patients for fiscal year 2061
+net_new_vs_new <- data %>%
+  filter(indicator %in% c("TX_NET_NEW", "TX_NEW"), fiscal_year == 2061) %>%
+  group_by(snu1, indicator) %>%
+  summarise(Total_Cumulative = sum(cumulative, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = indicator, values_from = Total_Cumulative, values_fill = 0)
+
+# Identify SNUs where net new patients are less than newly initiated patients
+net_new_less_than_new <- net_new_vs_new %>%
+  filter(TX_NET_NEW < TX_NEW) # Filter to only when NET_NEW is less than NEW
+```
+
+```{r, echo=FALSE}
+print(net_new_vs_new)
+```
+
+``r net_new_less_than_new$snu1`` had net new on treatment volumes below those newly on treatment for the year `FY2061`.
+
+If we want to look at SNUs by quarter instead of the entire year, we can do that as well.
+```{r, warning=FALSE}
+# Compare net new patients to newly initiated patients for fiscal year 2061 by quarter
+net_new_vs_new_qtr <- data_long %>%
+  filter(indicator %in% c("TX_NET_NEW", "TX_NEW"), fiscal_year == 2061) %>%
+  group_by(snu1, indicator, quarter) %>%
+  summarise(Total_Cumulative = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = indicator, values_from = Total_Cumulative, values_fill = 0)
+
+# Identify quarters where SNUs had net new patients are less than newly initiated patients
+net_new_less_than_new_qtr <- net_new_vs_new_qtr %>%
+  filter(TX_NET_NEW < TX_NEW) # Filter to only when NET_NEW is less than NEW
+net_new_less_than_new
+```
+## 7. Are any sub-national units (SNUs) lagging behind with getting a majority of patients onto 6 months or more of multi-month dispensing ( MMD) of treatment?
+
+```{r}
+# Filter data for TX_CURR indicator in Q3 of 2061 and relevant ARV dispensing categories
+q7 <- data_long %>%
+  filter(
+    indicator == "TX_CURR",
+    fiscal_year == 2061,
+    quarter == 3,
+    otherdisaggregate %in% c(
+      "ARV Dispensing Quantity - 3 to 5 months",
+      "ARV Dispensing Quantity - 6 or more months",
+      "ARV Dispensing Quantity - Less than 3 months"
+    )
+  ) %>%
+  # Group by SNU and ARV dispensing category, and calculate total dispensing quantity
+  group_by(snu1, otherdisaggregate) %>%
+  summarise(Total = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  # Reshape data to have separate columns for each ARV dispensing category
+  pivot_wider(
+    names_from = otherdisaggregate,
+    values_from = Total,
+    values_fill = 0
+  ) %>%
+  # Calculate total ARV dispensing for less than 6 months and overall
+  mutate(
+    Less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` +
+      `ARV Dispensing Quantity - Less than 3 months`,
+    Total_ARV = Less_than_6_months + `ARV Dispensing Quantity - 6 or more months`
+  ) %>%
+  # Calculate percentage of ARV dispensing for 6 or more months
+  mutate(Percentage_6_or_more_months = round(
+    (`ARV Dispensing Quantity - 6 or more months` / Total_ARV) * 100,
+    2
+  )) %>%
+  mutate(Percentage_6_or_more_months = paste0(Percentage_6_or_more_months, "%")) %>%
+  select(snu1, Less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, Percentage_6_or_more_months)
+```
+
+```{r, echo=FALSE}
+print(q7)
+```
+It appears that `Midwest` and `Northwest` are lagging below 50% 6 month or more MMD in `FY2061 Q3`, our most recent quarter.
+
+```{r}
+# Function to analyze ARV dispensing data for a given quarter
+analyze_arv_dispensing <- function(data, quarter) {
+  data %>%
+    filter(
+      indicator == "TX_CURR",
+      fiscal_year == 2061,
+      quarter == quarter,
+      otherdisaggregate %in% c(
+        "ARV Dispensing Quantity - 3 to 5 months",
+        "ARV Dispensing Quantity - 6 or more months",
+        "ARV Dispensing Quantity - Less than 3 months"
+      )
+    ) %>%
+    group_by(snu1, otherdisaggregate) %>%
+    summarise(Total = sum(value, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(
+      names_from = otherdisaggregate,
+      values_from = Total,
+      values_fill = 0
+    ) %>%
+    mutate(
+      Less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` +
+        `ARV Dispensing Quantity - Less than 3 months`,
+      Total_ARV = Less_than_6_months + `ARV Dispensing Quantity - 6 or more months`
+    ) %>%
+    mutate(Percentage_6_or_more_months = round(
+      (`ARV Dispensing Quantity - 6 or more months` / Total_ARV) * 100,
+      2
+    )) %>%
+    mutate(Percentage_6_or_more_months = paste0(Percentage_6_or_more_months, "%")) %>%
+    select(snu1, Less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, Percentage_6_or_more_months)
+}
+
+# Grab results for the previous two quarters too
+q7_q2 <- analyze_arv_dispensing(data_long, quarter = 2)
+q7_q1 <- analyze_arv_dispensing(data_long, quarter = 1)
+```
+
+This was the case in the previous two quarters as well.
+```{r, echo=FALSE}
+print(q7_q2)
+print(q7_q1)
+```
+
+## 8. Do we see any differences in viral load coverage (VLC) by age and sex for the current year?
+
+*Using `FY2061 Q3` data.*
+
+The equation for Viral Load Coverage is as follows:
+
+$\(Viral Load Coverage [Current Quarter] = (\frac{\text{TX_PVLS}[\text{Two Quarters Ago}]}{\text{TX_CURR}[\text{Current Quarter}]})\)$
+
+```{r}
+# Calculate TX_CURR_Lag
+tx_curr_lag <- data_long %>%
+  filter(
+    indicator == "TX_CURR_Lag2",
+    fiscal_year == 2061,
+    quarter == 3,
+    use_for_age == "Y"
+  ) %>%
+  group_by(sex, ageasentered) %>%
+  summarise(TX_CURR_Lag = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Calculate TX_PVLS
+tx_pvls <- data_long %>%
+  filter(
+    indicator == "TX_PVLS",
+    fiscal_year == 2061,
+    quarter == 3,
+    numeratordenom == "D"
+  ) %>%
+  group_by(sex, ageasentered) %>%
+  summarise(TX_PVLS = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Combine TX_CURR_Lag and TX_PVLS data, calculating VLC
+vlc_data <- tx_curr_lag %>%
+  left_join(tx_pvls, by = c("sex", "ageasentered")) %>%
+  mutate(VLC = TX_PVLS / TX_CURR_Lag) %>%
+  filter(!is.na(VLC)) # Remove rows with NA values in VLC
+
+# Calculate VLC percentage and prepare results
+results_q8 <- vlc_data %>%
+  mutate(VLC_Percentage = VLC * 100) %>%
+  select(sex, ageasentered, VLC_Percentage)
+```
+
+```{r, echo=FALSE}
+print(results_q8 %>%
+  mutate(VLC_Percentage = paste0(round(VLC_Percentage, 2), "%")))
+```
+
+```{r}
+# Calculate Viral Load Coverage (VLC) differences between men and women
+vlc_diff <- vlc_data %>%
+  filter(ageasentered != "Unknown Age") %>%
+  group_by(ageasentered) %>%
+  summarise(
+    VLC_Women = sum(TX_PVLS[sex == "Female"], na.rm = TRUE) / sum(TX_CURR_Lag[sex == "Female"], na.rm = TRUE) * 100,
+    VLC_Men = sum(TX_PVLS[sex == "Male"], na.rm = TRUE) / sum(TX_CURR_Lag[sex == "Male"], na.rm = TRUE) * 100,
+    # Calculate absolute difference in VLC
+    Difference = abs(VLC_Women - VLC_Men),
+    .groups = "drop"
+  ) %>%
+  # Filter out rows with NA values in VLC calculations
+  filter(!is.na(VLC_Women) & !is.na(VLC_Men))
+
+# Identify the age group with the most pronounced difference in VLC
+most_pronounced_diff <- vlc_diff %>%
+  filter(Difference == max(Difference)) %>%
+  mutate(
+    VLC_Percentage = paste0(round(Difference, 2), "%"),
+    VLC_Men = paste0(round(VLC_Men, 2), "%"),
+    VLC_Women = paste0(round(VLC_Women, 2), "%")
+  ) %>%
+  select(ageasentered, VLC_Men, VLC_Women, VLC_Percentage)
+```
+
+```{r}
+# Create a plot of VLC by age and sex
+vlc_data <- vlc_data %>%
+  filter(ageasentered != "Unknown Age")
+
+ggplot(vlc_data, aes(x = ageasentered, y = VLC, color = sex)) +
+  geom_point(size = 5) +
+  labs(
+    title = "Viral Load Coverage (VLC) by Age and Sex",
+    x = "Age",
+    y = "VLC (%)",
+    color = "Sex"
+  ) +
+  scale_color_manual(values = c("Female" = moody_blue, "Male" = genoa)) +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format(scale = 100), limits = c(0, 1.2), breaks = seq(0, 1.2, by = .2)) +
+  si_style()
+```
+
+With the exception of the `15-19` age group, women demonstrate higher viral load coverage (VLC) than men. The highest VLC is found in the youngest (`<01`) and oldest age groups (`55-59`, `60-64`, `65+`). There is an upward trend in VLC for children aged `01-04`, `05-09`, and `10-14`, followed by a decline in the `15-19` and `20-24` age groups, after which women's VLC gradually rises again. In contrast, men experience a decline through the `30-34` age group before starting to increase. The age group with the most significant difference in VLC between men and women is ``r most_pronounced_diff$ageasentered``, which has a ``r most_pronounced_diff$VLC_Percentage`` difference. This pattern is more pronounced among men, who show a sharper decline in their teens and twenties, as well as a steeper rise in their thirties and forties. Notably, the `50-54` age group stands out as an outlier, exhibiting much lower VLC than the overall trend would suggest.
+
+#### **<span style="color:#2057a7">Question: what if the PLHIV age out of one group and into another? For instance, if someone is 19 in 2061 Q1 and 20 in 2061 Q3? Also, the question asks for the full year. Should I calculate each quarter separately, or would lumping them together (i.e. not filtering on quarter) provide better results?</span>**
