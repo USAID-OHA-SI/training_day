@@ -204,7 +204,7 @@ library(gtayblr)
       standardizeddisaggregate == "Total Numerator",
       fiscal_year == meta$curr_fy
     ) %>%
-    count(indicator, wt = qtr3, name = "tot_tx_new")
+    count(indicator, wt = cumulative, name = "tot_tx_new")
   
   # Not all facilities report CD4 data so disag may not total up
   df_msd %>%
