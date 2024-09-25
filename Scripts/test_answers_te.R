@@ -145,7 +145,7 @@ library(gtayblr)
     arrange(period) %>%
     mutate(
       HTS_TST_trend = (HTS_TST - lag(HTS_TST)) / lag(HTS_TST),
-      pos_trend = (positivity - lag(positivity) / lag(positivity))
+      pos_trend = (positivity - lag(positivity)) / lag(positivity)
     ) %>%
     ungroup() %>%
     mutate(
@@ -158,7 +158,8 @@ library(gtayblr)
   # No SNUs had a decline in testing but increase in positivity
   df_hts_snu1 %>%
     filter(period > "FY59Q1") %>%
-    count(snu1, flag_up_down)
+    count(snu1, period, flag_up_down) %>% 
+    spread(period, n) %>% arrange(flag_up_down)
   
   df_hts_snu1 %>%
     filter(period > "FY59Q1") %>%
@@ -186,7 +187,7 @@ library(gtayblr)
     si_style_ygrid() +
     labs(
       title = "HTS_TST COMPARED TO HTS_TST_POS RESULTS ACROSS SNU1S",
-      subtitle = "No snus have declining test volumne and increasing positivity",
+      subtitle = "Midwest and Northwest have declining test volumne and increasing positivity",
       caption = glue("{meta$caption}")
     )
 
