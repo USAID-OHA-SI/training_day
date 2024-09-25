@@ -214,7 +214,7 @@ library(gtayblr)
       fiscal_year == meta$curr_fy
     ) %>%
     group_by(indicator, otherdisaggregate) %>%
-    summarise(cd4_totals = sum(qtr3, na.rm = T)) %>%
+    summarise(cd4_totals = sum(cumulative, na.rm = T)) %>%
     left_join(df_tx_new) %>%
     mutate(share = cd4_totals / tot_tx_new) %>%
     gt() %>%
