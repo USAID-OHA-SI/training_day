@@ -431,7 +431,7 @@ library(gtayblr)
         standardizeddisaggregate %in% c(
           "Age/Sex/HIVStatus",
           "Age/Sex/Indication/HIVStatus"
-        )
+        ),
         use_for_age == "Y"
       ) %>%
       gophr::clean_indicator() %>%
