@@ -10,8 +10,6 @@ output:
 
 ```{r setup, include=FALSE, ignore_warnings=TRUE}
 knitr::opts_chunk$set(echo = TRUE)
-library(themask)
-library(glamr)
 library(dplyr)
 library(tidyr)
 library(data.table)
@@ -21,10 +19,14 @@ library(patchwork)
 library(zoo)
 library(glitr)
 library(systemfonts)
+library(glamr)
+library(gagglr)
+library(scales, warn.conflicts = FALSE)
+library(tidytext)
 ```
 
 ```{r}
-data <- read.table("MER_Structured_TRAINING_Datasets_PSNU_IM_FY59-62_20240816_v1_1.txt", header = TRUE, sep = "\t")
+data <- read_psd("~/Github/training_day/Data/MER_Structured_TRAINING_Datasets_PSNU_IM_FY59-62_20240816_v1_1.zip")
 ```
 
 ## 1: Which partner should we focus on with lower target achievement in test positivity for the year?
@@ -34,24 +36,21 @@ When we take a look at prime partners’ `HTS_TST_POS` reported versus their tar
 ```{r}
 # Filter to the current year (2061)
 filtered_data_q1 <- data %>%
-  filter(fiscal_year == 2061, indicator == "HTS_TST_POS")
+  filter(fiscal_year == 2061, indicator == "HTS_TST_POS", standardizeddisaggregate=="Total Numerator")
 
 # Find reported HTS_TST_POS versus targets
 summary_table_q1 <- filtered_data_q1 %>%
   group_by(prime_partner_name) %>%
   summarise(
     PSNUs = paste(unique(psnu), collapse = ", "),
-    Targets = sum(targets, na.rm = TRUE),
-    Cumulative = sum(cumulative, na.rm = TRUE),
-    Achievement = if_else(
-      Targets > 0,
-      round(Cumulative / Targets * 100, 0),
-      NA_real_
-    )
+    targets = sum(targets, na.rm = TRUE),
+    cumulative = sum(cumulative, na.rm = TRUE),
   ) %>%
   ungroup() %>%
-  arrange(desc(Achievement)) %>%
-  mutate(Achievement = ifelse(is.na(Achievement), "No targets", paste0(Achievement, "%")))
+  calc_achievement() %>%
+  #adorn_achievement()
+  arrange(desc(achievement)) %>%
+  mutate(achievement = ifelse(is.na(achievement), "No targets", paste0(achievement*100, "%")))
 ```
 
 **`FY2061` (through `Q3`) Achievement of `HTS_TST_POS` Targets by Prime Partner**
@@ -71,24 +70,23 @@ The two partners with lower rates are `Dash`(`30%`) and `Cardinals`(`52%`). To v
 ```{r}
 # Do the same for 2060 data
 filtered_data_2060 <- data %>%
-  filter(fiscal_year == 2060, indicator == "HTS_TST_POS")
+  filter(fiscal_year == 2060, indicator == "HTS_TST_POS", standardizeddisaggregate=="Total Numerator")
 
+# Find reported HTS_TST_POS versus targets
 summary_table_2060 <- filtered_data_2060 %>%
   group_by(prime_partner_name) %>%
   summarise(
     PSNUs = paste(unique(psnu), collapse = ", "),
-    Targets = sum(targets, na.rm = TRUE),
-    Cumulative = sum(cumulative, na.rm = TRUE),
-    Achievement = if_else(
-      Targets > 0,
-      round(Cumulative / Targets * 100, 0),
-      NA_real_
-    )
+    targets = sum(targets, na.rm = TRUE),
+    cumulative = sum(cumulative, na.rm = TRUE),
   ) %>%
   ungroup() %>%
-  arrange(desc(Achievement)) %>%
-  mutate(Achievement = ifelse(is.na(Achievement), "No targets", paste0(Achievement, "%")))
+  calc_achievement() %>%
+  #adorn_achievement()
+  arrange(desc(achievement)) %>%
+  mutate(achievement = ifelse(is.na(achievement), "No targets", paste0(achievement*100, "%")))
 ```
+
 **`FY2060` Achievement of `HTS_TST_POS` Targets by Prime Partner**
 ```{r, echo=FALSE}
 print(summary_table_2060)
@@ -97,30 +95,22 @@ print(summary_table_2060)
 To understand where the `Dash`'s issues may be, we can also take a look at which PSNUs they are operating in. `Dash` appears to be closer to its targets in the `Salt Lake` PSNU than the `Sugar Land` PSNU:
 
 ```{r}
-# Filter to Dash only and group by PSNU
-summary_table_q1_DASH_PSNU <- data %>%
-  filter(
-    fiscal_year == 2061,
-    indicator == "HTS_TST_POS",
-    prime_partner_name == "Dash"
-  ) %>%
+summary_table_DASH <- data %>%
+  filter(fiscal_year == 2061, indicator == "HTS_TST_POS", standardizeddisaggregate=="Total Numerator", prime_partner_name=="Dash")%>%
   group_by(psnu) %>%
   summarise(
-    Targets = sum(targets, na.rm = TRUE),
-    Cumulative = sum(cumulative, na.rm = TRUE),
-    Achievement = if_else(
-      Targets > 0,
-      round(Cumulative / Targets * 100, 0),
-      NA_real_
-    )
+    targets = sum(targets, na.rm = TRUE),
+    cumulative = sum(cumulative, na.rm = TRUE),
   ) %>%
   ungroup() %>%
-  arrange(desc(Achievement)) %>%
-  mutate(Achievement = paste0(Achievement, "%"))
+  calc_achievement() %>%
+  #adorn_achievement()
+  arrange(desc(achievement)) %>%
+  mutate(achievement = ifelse(is.na(achievement), "No targets", paste0(achievement*100, "%")))
 ```
 
 ```{r echo=FALSE}
-print(summary_table_q1_DASH_PSNU)
+print(summary_table_DASH)
 ```
 
 Zooming out, we also will want to consider both the percentage of target achievement and the scale of the operation. 
@@ -138,10 +128,10 @@ This formula combines the scaled values of targets and cumulative results with t
 
 ```{r}
 # Grab min and maxes for targets and cumulative HTS_TST_POS
-min_targets <- min(summary_table_q1$Targets[summary_table_q1$Targets > 0], na.rm = TRUE)
-max_targets <- max(summary_table_q1$Targets[summary_table_q1$Targets > 0], na.rm = TRUE)
-min_cumulative <- min(summary_table_q1$Cumulative[summary_table_q1$Cumulative > 0], na.rm = TRUE)
-max_cumulative <- max(summary_table_q1$Cumulative[summary_table_q1$Cumulative > 0], na.rm = TRUE)
+min_targets <- min(summary_table_q1$targets[summary_table_q1$targets > 0], na.rm = TRUE)
+max_targets <- max(summary_table_q1$targets[summary_table_q1$targets > 0], na.rm = TRUE)
+min_cumulative <- min(summary_table_q1$cumulative[summary_table_q1$cumulative > 0], na.rm = TRUE)
+max_cumulative <- max(summary_table_q1$cumulative[summary_table_q1$cumulative > 0], na.rm = TRUE)
 
 # Normalization function
 normalize <- function(value, min_value, max_value) {
@@ -151,16 +141,14 @@ normalize <- function(value, min_value, max_value) {
 # Normalize the table and calculate the score
 normalized_summary_table_q1 <- summary_table_q1 %>%
   mutate(
-    Normalized_Targets = normalize(Targets, min_targets, max_targets),
-    Normalized_Cumulative = normalize(Cumulative, min_cumulative, max_cumulative),
-    Achievement_Ratio = if_else(Targets > 0,
-      Cumulative / Targets,
-      NA_real_
-    ),
-    Achievement_Ratio = if_else(is.na(Achievement_Ratio), 1, Achievement_Ratio),
-    Score = (Normalized_Targets + Normalized_Cumulative) * (1 - Achievement_Ratio)
+    normalized_targets = normalize(targets, min_targets, max_targets),
+    normalized_cumulative = normalize(cumulative, min_cumulative, max_cumulative)
   ) %>%
-  arrange(desc(Score))
+  calc_achievement() %>%
+  mutate(
+    score = (normalized_targets + normalized_cumulative) * (1 - achievement)*10
+  ) %>%
+  arrange(desc(score))
 ```
 
 ```{r, echo=FALSE}
@@ -194,13 +182,14 @@ summary_table_q2 <- data_long %>%
   filter(
     fiscal_year == 2061,
     indicator %in% c("HTS_TST", "HTS_TST_POS"),
-    quarter == 3
+    quarter == 3,
+    standardizeddisaggregate == "Modality/Age/Sex/Result"
   ) %>% # Filter to most recent quarter (2061 Q3)
   group_by(indicator) %>%
   summarise(
-    All = sum(value, na.rm = TRUE), # Sum for all modalities (denominator)
-    Index_Only = sum(if_else(modality == "Index", value, 0), na.rm = TRUE), # Sum for only 'Index' modality (numerator)
-    Percentage_From_Index = paste0(round((Index_Only / All) * 100, 2), "%")
+    all_modalities = sum(value, na.rm = TRUE), # Sum for all modalities (denominator)
+    index_only = sum(if_else(grepl("Index", modality), value, 0), na.rm = TRUE), # Sum for only 'Index' modalities (numerator)
+    share_from_index = paste0(round((index_only / all_modalities) * 100, ), "%")
   ) %>%
   ungroup()
 ```
@@ -442,43 +431,34 @@ We still do not see any SNUs where there is a decline in testing and an increase
 data_2061 <- data_long %>%
   filter(fiscal_year == 2061)
 
-# Total number of newly initiated patients (TX_NEW) with CD4 count < 200
-cumulative_txnew_lessthan200cd4 <- data_2061 %>%
-  filter(indicator == "TX_NEW", otherdisaggregate == "<200 CD4") %>%
-  summarise(Total_Cumulative = sum(value, na.rm = TRUE)) %>%
-  pull(Total_Cumulative)
-
-# Total number of newly initiated patients (TX_NEW) with CD4 count >= 200
-cumulative_txnew_greaterthan200cd4 <- data_2061 %>%
-  filter(indicator == "TX_NEW", otherdisaggregate == ">=200 CD4") %>%
-  summarise(Total_Cumulative = sum(value, na.rm = TRUE)) %>%
-  pull(Total_Cumulative)
-
-# Total number of newly initiated patients (TX_NEW)
-total_tx_new <- data_2061 %>%
-  filter(indicator == "TX_NEW") %>%
-  summarise(Total_New = sum(value, na.rm = TRUE)) %>%
-  pull(Total_New)
+cumulative_txnew_counts <- data_2061 %>%
+  filter(indicator == "TX_NEW", otherdisaggregate %in% c("<200 CD4", ">=200 CD4")) %>%
+  summarize(
+    total_cumulative_less_than_200 = sum(value[otherdisaggregate == "<200 CD4"], na.rm = TRUE),
+    total_cumulative_greater_than_or_equal_200 = sum(value[otherdisaggregate == ">=200 CD4"], na.rm = TRUE),
+    total_tx_new = sum(value, na.rm = TRUE)
+  )
 
 # Comparison of CD4 counts
 cumulative_txnew_cd4_comparison <- data_2061 %>%
   filter(indicator == "TX_NEW", otherdisaggregate %in% c("<200 CD4", ">=200 CD4")) %>%
   group_by(fiscal_year, otherdisaggregate) %>%
-  summarise(
-    Total_CD4_Count = sum(value, na.rm = TRUE),
+  summarize(
+    total_CD4_count = sum(value, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  ungroup() %>%
-  pivot_wider(names_from = otherdisaggregate, values_from = Total_CD4_Count, values_fill = list(Total_CD4_Count = 0)) %>%
+  pivot_wider(
+    names_from = otherdisaggregate,
+    values_from = total_CD4_count,
+    values_fill = list(total_CD4_count = 0)
+  ) %>%
   mutate(
-    Total_Treatment_with_CD4_disagg = `<200 CD4` + `>=200 CD4`,
-    Percentage_Less_Than_200_CD4 = round((`<200 CD4` / Total_Treatment_with_CD4_disagg) * 100, 2),
-    Percentage_Greater_Than_Equal_200_CD4 = round((`>=200 CD4` / Total_Treatment_with_CD4_disagg) * 100, 2)
+    total_treatment_with_CD4_disagg = `<200 CD4` + `>=200 CD4`,
+    share_less_than_200_CD4 = paste0(round((`<200 CD4` / total_treatment_with_CD4_disagg) * 100, 1), "%"),
+    share_greater_than_equal_200_CD4 = paste0(round((`>=200 CD4` / total_treatment_with_CD4_disagg) * 100, 1), "%"),
+    total_TX_New = cumulative_txnew_counts$total_tx_new,
+    less_than_200_CD4 = `<200 CD4`
   )
-
-# Combine the comparison and total
-cumulative_txnew_cd4_comparison <- cumulative_txnew_cd4_comparison %>%
-  mutate(Total_TX_New = total_tx_new)
 ```
 
 ```{r, echo=FALSE}
@@ -487,99 +467,90 @@ print(cumulative_txnew_cd4_comparison)
 ```
 
 ```{r}
-total_below_200 <- cumulative_txnew_cd4_comparison$`<200 CD4`
-below_200_percentage <- paste0(cumulative_txnew_cd4_comparison$Percentage_Less_Than_200_CD4, "%")
-
 total_percentage_both_categories <- paste0(
-  round(((cumulative_txnew_lessthan200cd4 + cumulative_txnew_greaterthan200cd4) / total_tx_new) * 100, 2),
+  round(((cumulative_txnew_cd4_comparison$total_cumulative_less_than_200 + cumulative_txnew_cd4_comparison$total_cumulative_greater_than_or_equal_200) / cumulative_txnew_cd4_comparison$total_tx_new) * 100, 1),
   "%"
 )
 ```
-It appears that ``r total_below_200`` newly initiated patients had a CD4 <200 in `FY2061`. This is ``r below_200_percentage`` of newly initiated patients that have a reported CD4 in the data.
+It appears that ``r cumulative_txnew_cd4_comparison$less_than_200_CD4`` newly initiated patients had a CD4 <200 in `FY2061`. This is ``r cumulative_txnew_cd4_comparison$share_less_than_200_CD4`` of newly initiated patients that have a reported CD4 in the data.
 
-Importantly, only ``r total_percentage_both_categories`` have a CD4 value in 2061 (the only year with CD4 disaggregated). As a note, the only year that reports this data is `FY2061`. We can look at the trends by quarter within the year as well.
+Importantly, only ``r total_percentage_both_categories`` have a CD4 value in 2061 (the only year with CD4 disaggregated). As a note, the only year that reports this data is `FY2061`. We can look at the trends by quarter within the year as well:
 
 ```{r}
-# Calculate cumulative CD4 counts for newly initiated patients in 2061
-cumulative_txnew_cd4_comparison <- data_2061 %>%
+cumulative_txnew_cd4_comparison_qtr <- data_2061 %>%
   filter(indicator == "TX_NEW", otherdisaggregate %in% c("<200 CD4", ">=200 CD4")) %>%
   group_by(fiscal_year, quarter, otherdisaggregate) %>%
-  summarise(
-    Total_CD4_Count = sum(value, na.rm = TRUE),
+  summarize(
+    total_CD4_count = sum(value, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  ungroup() %>%
-  pivot_wider( # Reshape data to wide format with separate columns for each CD4 category
+  pivot_wider(
     names_from = otherdisaggregate,
-    values_from = Total_CD4_Count,
-    values_fill = list(Total_CD4_Count = 0)
+    values_from = total_CD4_count,
+    values_fill = list(total_CD4_count = NA)
   ) %>%
-  mutate( # Calculate percentage of patients in each CD4 category
-    Percentage_Less_Than_200_CD4 = paste0(
-      round((`<200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 2), "%"
-    ),
-    Percentage_Greater_Than_Equal_200_CD4 = paste0(
-      round((`>=200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 2), "%"
-    )
+  mutate(
+    share_less_than_200_CD4 = paste0(round((`<200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 1), "%"),
+    share_greater_than_equal_200_CD4 = paste0(round((`>=200 CD4` / (`<200 CD4` + `>=200 CD4`)) * 100, 1), "%")
   )
 ```
 
 ```{r, echo=FALSE}
-print(cumulative_txnew_cd4_comparison)
+print(cumulative_txnew_cd4_comparison_qtr)
 ```
-#### **<span style="color:#2057a7">Question: I am not sure I did this all right. Should I be comparing the <200 and >=200 CD4 disaggregates like this? Why do only so few have this disagg?</span>**
-
 ## 5. Which age bands have had two or more quarters with declining net new on treatment?
 
 Two or more total quarters with declining net new on treatment:
 ```{r}
 # Calculate net new patient counts and identify declining trends by age
 net_new_declining <- data_long %>%
-  mutate(Year_Quarter = paste(fiscal_year, quarter, sep = "_Q")) %>%
+  mutate(year_quarter = paste(fiscal_year, quarter, sep = "_Q")) %>%
   filter(indicator == "TX_NET_NEW") %>%
-  group_by(ageasentered, Year_Quarter) %>%
+  group_by(ageasentered, year_quarter) %>%
   summarise(
-    Value = sum(value, na.rm = TRUE),
+    value = sum(value, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  mutate(Is_Negative = Value < 0) # Create flag for if TX_NET_NEW is negative
-
-# Count the number of quarters with negative values for each age group
-declining_counts <- net_new_declining %>%
+  mutate(is_negative = value < 0) %>%
   group_by(ageasentered) %>%
   summarise(
-    Declining_Quarter_Count = sum(Is_Negative),
+    declining_quarters_count = sum(is_negative),
     .groups = "drop"
   ) %>%
-  filter(Declining_Quarter_Count >= 2) # Filter where there are any two quarters with negative TX_NET_NEW
+  filter(declining_quarters_count >= 2) # Filter where there are any two quarters with negative TX_NET_NEW
 ```
 
 These age bands have had at least 2 quarters in the data with declining `TX_NET_NEW`:
 ```{r, echo=FALSE}
-print(declining_counts)
+print(net_new_declining)
 ```
 
 We can also check for consecutive declines.
 ```{r}
 # Identify consecutive declines in net new patient counts by age group
-consecutive_declines <- net_new_declining %>%
-  arrange(ageasentered, Year_Quarter) %>%
-  group_by(ageasentered) %>%
-  mutate(
-    # Check if the current and previous quarters are negative
-    Consecutive_Decline = ifelse(Is_Negative, lag(Is_Negative, default = FALSE), FALSE) & Is_Negative,
-    # Create a group for each series of consecutive declines
-    Decline_Group = cumsum(!Consecutive_Decline)
-  ) %>%
-  filter(Is_Negative) %>%
-  group_by(ageasentered, Decline_Group) %>% # Group by age and decline group
+consecutive_declines <- data_long %>%
+  mutate(year_quarter = paste(fiscal_year, quarter, sep = "_Q")) %>%
+  filter(indicator == "TX_NET_NEW") %>%
+  arrange(ageasentered, year_quarter) %>%
+  group_by(ageasentered, year_quarter) %>%
   summarise(
-    Consecutive_Decline_Count = n(),
-    Year_Quarter_List = paste(Year_Quarter, collapse = ", "), # List of quarters
+    value = sum(value, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  filter(Consecutive_Decline_Count >= 2) %>% # Keep at least 2 declines
-  select(ageasentered, Consecutive_Decline_Count, Year_Quarter_List)
+  mutate(
+    is_negative = value < 0,
+    consecutive_decline = is_negative & lag(is_negative, default = FALSE), # Check for consecutive declines
+    decline_group = cumsum(!consecutive_decline) # Group each consecutive decline series
+  ) %>%
+  filter(is_negative) %>%
+  group_by(ageasentered, decline_group)%>%
+  summarise(
+    consecutive_decline_count = n(), # Count consecutive declines
+    year_quarter_list = paste(year_quarter, collapse = ", "), # List of declining quarters
+    .groups = "drop"
+  ) %>%
+  filter(consecutive_decline_count >= 2) %>% # Filter for at least 2 consecutive declines
+  select(ageasentered, year_quarter_list)
 ```
 
 Every time an age group has two or more quarters in decline in a row:
@@ -589,7 +560,7 @@ print(consecutive_declines)
 
 **Age Bands with Two of More Total Declining Quarters**
 ```{r, echo=FALSE}
-print(unique(declining_counts$ageasentered))
+print(unique(net_new_declining$ageasentered))
 ```
 
 **Age Bands with Two or More Consecutive Declines**
@@ -604,8 +575,8 @@ print(unique(consecutive_declines$ageasentered))
 net_new_vs_new <- data %>%
   filter(indicator %in% c("TX_NET_NEW", "TX_NEW"), fiscal_year == 2061) %>%
   group_by(snu1, indicator) %>%
-  summarise(Total_Cumulative = sum(cumulative, na.rm = TRUE), .groups = "drop") %>%
-  pivot_wider(names_from = indicator, values_from = Total_Cumulative, values_fill = 0)
+  summarise(total_cumulative = sum(cumulative, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = indicator, values_from = total_cumulative, values_fill = NA)
 
 # Identify SNUs where net new patients are less than newly initiated patients
 net_new_less_than_new <- net_new_vs_new %>%
@@ -624,51 +595,44 @@ If we want to look at SNUs by quarter instead of the entire year, we can do that
 net_new_vs_new_qtr <- data_long %>%
   filter(indicator %in% c("TX_NET_NEW", "TX_NEW"), fiscal_year == 2061) %>%
   group_by(snu1, indicator, quarter) %>%
-  summarise(Total_Cumulative = sum(value, na.rm = TRUE), .groups = "drop") %>%
-  pivot_wider(names_from = indicator, values_from = Total_Cumulative, values_fill = 0)
+  summarise(total_cumulative = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = indicator, values_from = total_cumulative, values_fill = NA)
 
 # Identify quarters where SNUs had net new patients are less than newly initiated patients
 net_new_less_than_new_qtr <- net_new_vs_new_qtr %>%
   filter(TX_NET_NEW < TX_NEW) # Filter to only when NET_NEW is less than NEW
-net_new_less_than_new
+net_new_less_than_new_qtr
 ```
 ## 7. Are any sub-national units (SNUs) lagging behind with getting a majority of patients onto 6 months or more of multi-month dispensing ( MMD) of treatment?
 
 ```{r}
+arv_categories <- c(
+  "ARV Dispensing Quantity - 3 to 5 months",
+  "ARV Dispensing Quantity - 6 or more months",
+  "ARV Dispensing Quantity - Less than 3 months"
+)
+
 # Filter data for TX_CURR indicator in Q3 of 2061 and relevant ARV dispensing categories
 q7 <- data_long %>%
   filter(
     indicator == "TX_CURR",
     fiscal_year == 2061,
     quarter == 3,
-    otherdisaggregate %in% c(
-      "ARV Dispensing Quantity - 3 to 5 months",
-      "ARV Dispensing Quantity - 6 or more months",
-      "ARV Dispensing Quantity - Less than 3 months"
-    )
+    otherdisaggregate %in% arv_categories
   ) %>%
-  # Group by SNU and ARV dispensing category, and calculate total dispensing quantity
   group_by(snu1, otherdisaggregate) %>%
-  summarise(Total = sum(value, na.rm = TRUE), .groups = "drop") %>%
-  # Reshape data to have separate columns for each ARV dispensing category
+  summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
   pivot_wider(
     names_from = otherdisaggregate,
-    values_from = Total,
-    values_fill = 0
+    values_from = total,
+    values_fill = list(total = 0) # Ensures missing categories are treated as 0
   ) %>%
-  # Calculate total ARV dispensing for less than 6 months and overall
   mutate(
-    Less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` +
-      `ARV Dispensing Quantity - Less than 3 months`,
-    Total_ARV = Less_than_6_months + `ARV Dispensing Quantity - 6 or more months`
+    less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
+    total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
+    share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
   ) %>%
-  # Calculate percentage of ARV dispensing for 6 or more months
-  mutate(Percentage_6_or_more_months = round(
-    (`ARV Dispensing Quantity - 6 or more months` / Total_ARV) * 100,
-    2
-  )) %>%
-  mutate(Percentage_6_or_more_months = paste0(Percentage_6_or_more_months, "%")) %>%
-  select(snu1, Less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, Percentage_6_or_more_months)
+  select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)
 ```
 
 ```{r, echo=FALSE}
@@ -678,47 +642,36 @@ It appears that `Midwest` and `Northwest` are lagging below 50% 6 month or more 
 
 ```{r}
 # Function to analyze ARV dispensing data for a given quarter
-analyze_arv_dispensing <- function(data, quarter) {
-  data %>%
+analyze_arv_dispensing <- function(data_long, qtr) {
+  filtered_data <- data_long %>%
     filter(
       indicator == "TX_CURR",
       fiscal_year == 2061,
-      quarter == quarter,
-      otherdisaggregate %in% c(
-        "ARV Dispensing Quantity - 3 to 5 months",
-        "ARV Dispensing Quantity - 6 or more months",
-        "ARV Dispensing Quantity - Less than 3 months"
-      )
-    ) %>%
+      quarter == qtr,
+      otherdisaggregate %in% arv_categories
+    )
+  
+  filtered_data %>%
     group_by(snu1, otherdisaggregate) %>%
-    summarise(Total = sum(value, na.rm = TRUE), .groups = "drop") %>%
+    summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
     pivot_wider(
       names_from = otherdisaggregate,
-      values_from = Total,
-      values_fill = 0
+      values_from = total,
+      values_fill = list(total = 0)
     ) %>%
     mutate(
-      Less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` +
-        `ARV Dispensing Quantity - Less than 3 months`,
-      Total_ARV = Less_than_6_months + `ARV Dispensing Quantity - 6 or more months`
+      less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
+      total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
+      share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
     ) %>%
-    mutate(Percentage_6_or_more_months = round(
-      (`ARV Dispensing Quantity - 6 or more months` / Total_ARV) * 100,
-      2
-    )) %>%
-    mutate(Percentage_6_or_more_months = paste0(Percentage_6_or_more_months, "%")) %>%
-    select(snu1, Less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, Percentage_6_or_more_months)
+    select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)
 }
-
-# Grab results for the previous two quarters too
-q7_q2 <- analyze_arv_dispensing(data_long, quarter = 2)
-q7_q1 <- analyze_arv_dispensing(data_long, quarter = 1)
 ```
 
 This was the case in the previous two quarters as well.
 ```{r, echo=FALSE}
-print(q7_q2)
-print(q7_q1)
+print(analyze_arv_dispensing(data_long, 2))
+print(q7_q1 <- analyze_arv_dispensing(data_long, 1))
 ```
 
 ## 8. Do we see any differences in viral load coverage (VLC) by age and sex for the current year?
@@ -766,7 +719,7 @@ results_q8 <- vlc_data %>%
 
 ```{r, echo=FALSE}
 print(results_q8 %>%
-  mutate(VLC_Percentage = paste0(round(VLC_Percentage, 2), "%")))
+  mutate(VLC_Percentage = paste0(round(VLC_Percentage, 1), "%")))
 ```
 
 ```{r}
