@@ -345,7 +345,7 @@ library(gtayblr)
     si_gt_base() %>%
     gt_highlight_rows(rows = mmd_6mo_share < 0.5 & mmd_order == "6 months +", fill = hilght_color) %>%
     tab_source_note(source_note = glue("{meta$caption}")) %>%
-    tab_header(title = "Three of four regions lage behind majority 6 month mmd coverage")
+    tab_header(title = "Three of four regions lag behind majority 6 month mmd coverage")
 
 
 
@@ -364,7 +364,8 @@ library(gtayblr)
       standardizeddisaggregate %in% c(
         "Age/Sex/HIVStatus",
         "Age/Sex/Indication/HIVStatus"
-      )
+      ),
+      use_for_age = Y
     ) %>%
     gophr::clean_indicator() %>% # Affixes an N or D to TX_PVLS stub
     group_by(indicator, fiscal_year, sex, age_2019) %>%
@@ -408,7 +409,7 @@ library(gtayblr)
     scale_color_identity() +
     si_style() +
     labs(
-      title = "ADULT MEN APPEAR TO HAVE BETTER VIRAL LOAD COVERAGE THAN ADULT WOMEN",
+      title = "ADULT WOMEN APPEAR TO HAVE BETTER VIRAL LOAD COVERAGE THAN ADULT MEN",
       caption = glue("{meta$caption}"),
       x = NULL,
       y = "Viral load coverage"
@@ -431,6 +432,7 @@ library(gtayblr)
           "Age/Sex/HIVStatus",
           "Age/Sex/Indication/HIVStatus"
         )
+        use_for_age == "Y"
       ) %>%
       gophr::clean_indicator() %>%
       group_by(indicator, fiscal_year, ...) %>%
