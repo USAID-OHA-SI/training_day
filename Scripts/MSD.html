@@ -1172,8 +1172,8 @@ consecutive_declines &lt;- data_long %&gt;%
   ) %&gt;%
   filter(consecutive_decline_count &gt;= 2) %&gt;% # Filter for at least 2 consecutive declines
   select(ageasentered, year_quarter_list)</code></pre>
-<p>Every time an age group has two or more quarters in decline in a
-row:</p>
+<p><strong>Every time an age group has two or more quarters in decline
+in a row:</strong></p>
 <pre><code>## # A tibble: 12 × 2
 ##    ageasentered year_quarter_list                                               
 ##    &lt;chr&gt;        &lt;chr&gt;                                                           
@@ -1208,9 +1208,8 @@ net_new_vs_new &lt;- data %&gt;%
   summarise(total_cumulative = sum(cumulative, na.rm = TRUE), .groups = &quot;drop&quot;) %&gt;%
   pivot_wider(names_from = indicator, values_from = total_cumulative, values_fill = NA)
 
-# Identify SNUs where net new patients are less than newly initiated patients
 net_new_less_than_new &lt;- net_new_vs_new %&gt;%
-  filter(TX_NET_NEW &lt; TX_NEW) # Filter to only when NET_NEW is less than NEW</code></pre>
+  filter(TX_NET_NEW &lt; TX_NEW)</code></pre>
 <pre><code>## # A tibble: 4 × 3
 ##   snu1           TX_NET_NEW TX_NEW
 ##   &lt;chr&gt;               &lt;dbl&gt;  &lt;dbl&gt;
@@ -1247,86 +1246,122 @@ net_new_less_than_new_qtr</code></pre>
 <h2>7. Are any sub-national units (SNUs) lagging behind with getting a
 majority of patients onto 6 months or more of multi-month dispensing (
 MMD) of treatment?</h2>
-<pre class="r"><code>arv_categories &lt;- c(
-  &quot;ARV Dispensing Quantity - 3 to 5 months&quot;,
-  &quot;ARV Dispensing Quantity - 6 or more months&quot;,
-  &quot;ARV Dispensing Quantity - Less than 3 months&quot;
-)
-
-# Filter data for TX_CURR indicator in Q3 of 2061 and relevant ARV dispensing categories
-q7 &lt;- data_long %&gt;%
+<pre class="r"><code>df_tx &lt;- data %&gt;%
   filter(
     indicator == &quot;TX_CURR&quot;,
     fiscal_year == 2061,
-    quarter == 3,
-    otherdisaggregate %in% arv_categories
+    str_detect(standardizeddisaggregate, &quot;Total&quot;)
+  ) %&gt;%
+  count(snu1, wt = cumulative, name = &quot;tx_curr&quot;)
+
+q7_fy &lt;- data %&gt;%
+  filter(
+    indicator == &quot;TX_CURR&quot;,
+    fiscal_year == 2061,
+    standardizeddisaggregate == &quot;Age/Sex/ARVDispense/HIVStatus&quot;
   ) %&gt;%
   group_by(snu1, otherdisaggregate) %&gt;%
+  summarise(total = sum(cumulative, na.rm = TRUE), .groups = &quot;drop&quot;) %&gt;%
+  pivot_wider(
+    names_from = otherdisaggregate,
+    values_from = total,
+    values_fill = list(total = 0) # Ensures missing categories are treated as 0
+  ) %&gt;%
+  left_join(df_tx, by = join_by(snu1)) %&gt;%
+  mutate(
+    less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
+    total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
+    share_denom_tx_curr = paste0(round((`ARV Dispensing Quantity - 6 or more months` / tx_curr) * 100, 1), &quot;%&quot;),
+    share_denom_arv = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), &quot;%&quot;)
+  ) %&gt;%
+  select(snu1, `ARV Dispensing Quantity - 3 to 5 months`,
+  `ARV Dispensing Quantity - 6 or more months`,
+  `ARV Dispensing Quantity - Less than 3 months`, share_denom_tx_curr, share_denom_arv)</code></pre>
+<pre class="r"><code>q7_fy</code></pre>
+<pre><code>## # A tibble: 4 × 6
+##   snu1      ARV Dispensing Quant…¹ ARV Dispensing Quant…² ARV Dispensing Quant…³
+##   &lt;chr&gt;                      &lt;dbl&gt;                  &lt;dbl&gt;                  &lt;dbl&gt;
+## 1 Midwest                    19644                  10106                   9894
+## 2 Northwest                  24610                  19179                   4202
+## 3 Pacific …                    805                   3754                    287
+## 4 South At…                   2388                   4572                    386
+## # ℹ abbreviated names: ¹​`ARV Dispensing Quantity - 3 to 5 months`,
+## #   ²​`ARV Dispensing Quantity - 6 or more months`,
+## #   ³​`ARV Dispensing Quantity - Less than 3 months`
+## # ℹ 2 more variables: share_denom_tx_curr &lt;chr&gt;, share_denom_arv &lt;chr&gt;</code></pre>
+<pre class="r"><code>df_tx_qtr &lt;- data_long %&gt;%
+  filter(
+    indicator == &quot;TX_CURR&quot;,
+    fiscal_year == 2061,
+    str_detect(standardizeddisaggregate, &quot;Total&quot;)
+  ) %&gt;%
+  group_by(quarter) %&gt;%
+  count(snu1, wt = value, name = &quot;tx_curr&quot;)
+
+q7_fy_qtr &lt;- data_long %&gt;%
+  filter(
+    indicator == &quot;TX_CURR&quot;,
+    fiscal_year == 2061,
+    standardizeddisaggregate == &quot;Age/Sex/ARVDispense/HIVStatus&quot;
+  ) %&gt;%
+  group_by(snu1, quarter, otherdisaggregate) %&gt;%
   summarise(total = sum(value, na.rm = TRUE), .groups = &quot;drop&quot;) %&gt;%
   pivot_wider(
     names_from = otherdisaggregate,
     values_from = total,
     values_fill = list(total = 0) # Ensures missing categories are treated as 0
   ) %&gt;%
+  left_join(df_tx_qtr, by = join_by(snu1, quarter)) %&gt;%
   mutate(
     less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
     total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
-    share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), &quot;%&quot;)
+    share_denom_tx_curr = paste0(round((`ARV Dispensing Quantity - 6 or more months` / tx_curr) * 100, 1), &quot;%&quot;),
+    share_denom_arv = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), &quot;%&quot;)
   ) %&gt;%
-  select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)</code></pre>
-<pre><code>## # A tibble: 4 × 4
-##   snu1          less_than_6_months ARV Dispensing Quant…¹ share_6_or_more_months
-##   &lt;chr&gt;                      &lt;dbl&gt;                  &lt;dbl&gt; &lt;chr&gt;                 
-## 1 Midwest                    29538                  10106 25.5%                 
-## 2 Northwest                  28812                  19179 40%                   
-## 3 Pacific Coast               1092                   3754 77.5%                 
-## 4 South Atlant…               2774                   4572 62.2%                 
-## # ℹ abbreviated name: ¹​`ARV Dispensing Quantity - 6 or more months`</code></pre>
-<p>It appears that <code>Midwest</code> and <code>Northwest</code> are
-lagging below 50% 6 month or more MMD in <code>FY2061 Q3</code>, our
-most recent quarter.</p>
-<pre class="r"><code># Function to analyze ARV dispensing data for a given quarter
-analyze_arv_dispensing &lt;- function(data_long, qtr) {
-  filtered_data &lt;- data_long %&gt;%
+  select(quarter, snu1, `ARV Dispensing Quantity - 3 to 5 months`,
+  `ARV Dispensing Quantity - 6 or more months`,
+  `ARV Dispensing Quantity - Less than 3 months`, share_denom_tx_curr, share_denom_arv)</code></pre>
+<p>This was the case in the previous two quarters as well.</p>
+<pre><code>## # A tibble: 12 × 7
+##    quarter snu1           ARV Dispensing Quantity - 3 t…¹ ARV Dispensing Quant…²
+##    &lt;chr&gt;   &lt;chr&gt;                                    &lt;dbl&gt;                  &lt;dbl&gt;
+##  1 1       Midwest                                  19019                   9747
+##  2 2       Midwest                                  18903                   8993
+##  3 3       Midwest                                  19644                  10106
+##  4 1       Northwest                                26197                  16621
+##  5 2       Northwest                                26798                  16775
+##  6 3       Northwest                                24610                  19179
+##  7 1       Pacific Coast                              902                   3201
+##  8 2       Pacific Coast                              930                   3433
+##  9 3       Pacific Coast                              805                   3754
+## 10 1       South Atlantic                            2702                   4090
+## 11 2       South Atlantic                            2483                   4398
+## 12 3       South Atlantic                            2388                   4572
+## # ℹ abbreviated names: ¹​`ARV Dispensing Quantity - 3 to 5 months`,
+## #   ²​`ARV Dispensing Quantity - 6 or more months`
+## # ℹ 3 more variables: `ARV Dispensing Quantity - Less than 3 months` &lt;dbl&gt;,
+## #   share_denom_tx_curr &lt;chr&gt;, share_denom_arv &lt;chr&gt;</code></pre>
+<p>To undersand the difference between the two share values, we look at
+who is providing ARVDispense. It looks like MMD data is provided (Total
+Numerator = Age/Sex/ARVDispense/HIVStatus)for all in Midwest and Pacific
+Coast, but not for Northwest and South Atlantic.</p>
+<pre class="r"><code>  data %&gt;%
     filter(
       indicator == &quot;TX_CURR&quot;,
       fiscal_year == 2061,
-      quarter == qtr,
-      otherdisaggregate %in% arv_categories
-    )
-  
-  filtered_data %&gt;%
-    group_by(snu1, otherdisaggregate) %&gt;%
-    summarise(total = sum(value, na.rm = TRUE), .groups = &quot;drop&quot;) %&gt;%
-    pivot_wider(
-      names_from = otherdisaggregate,
-      values_from = total,
-      values_fill = list(total = 0)
+      str_detect(standardizeddisaggregate, &quot;ARV|Total&quot;)
     ) %&gt;%
-    mutate(
-      less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
-      total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
-      share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), &quot;%&quot;)
-    ) %&gt;%
-    select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)
-}</code></pre>
-<p>This was the case in the previous two quarters as well.</p>
+    count(snu1, indicator, standardizeddisaggregate, wt = cumulative) %&gt;%
+    pivot_wider(names_from = standardizeddisaggregate, values_from = n) %&gt;%
+    mutate(diff = .[[3]] - .[[4]]) %&gt;%
+  select(snu1, diff, `Age/Sex/ARVDispense/HIVStatus`, `Total Numerator`)</code></pre>
 <pre><code>## # A tibble: 4 × 4
-##   snu1          less_than_6_months ARV Dispensing Quant…¹ share_6_or_more_months
-##   &lt;chr&gt;                      &lt;dbl&gt;                  &lt;dbl&gt; &lt;chr&gt;                 
-## 1 Midwest                    30450                   8993 22.8%                 
-## 2 Northwest                  31194                  16775 35%                   
-## 3 Pacific Coast               1280                   3433 72.8%                 
-## 4 South Atlant…               2939                   4398 59.9%                 
-## # ℹ abbreviated name: ¹​`ARV Dispensing Quantity - 6 or more months`</code></pre>
-<pre><code>## # A tibble: 4 × 4
-##   snu1          less_than_6_months ARV Dispensing Quant…¹ share_6_or_more_months
-##   &lt;chr&gt;                      &lt;dbl&gt;                  &lt;dbl&gt; &lt;chr&gt;                 
-## 1 Midwest                    29001                   9747 25.2%                 
-## 2 Northwest                  30225                  16621 35.5%                 
-## 3 Pacific Coast               1143                   3201 73.7%                 
-## 4 South Atlant…               3158                   4090 56.4%                 
-## # ℹ abbreviated name: ¹​`ARV Dispensing Quantity - 6 or more months`</code></pre>
+##   snu1             diff `Age/Sex/ARVDispense/HIVStatus` `Total Numerator`
+##   &lt;chr&gt;           &lt;dbl&gt;                           &lt;dbl&gt;             &lt;dbl&gt;
+## 1 Midwest             0                           39644             39644
+## 2 Northwest       -1521                           47991             49512
+## 3 Pacific Coast       0                            4846              4846
+## 4 South Atlantic -22554                            7346             29900</code></pre>
 </div>
 <div id="do-we-see-any-differences-in-viral-load-coverage-vlc-by-age-and-sex-for-the-current-year" class="section level2">
 <h2>8. Do we see any differences in viral load coverage (VLC) by age and

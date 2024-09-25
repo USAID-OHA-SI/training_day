@@ -23,6 +23,7 @@ library(glamr)
 library(gagglr)
 library(scales, warn.conflicts = FALSE)
 library(tidytext)
+library(stringr)
 ```
 
 ```{r}
@@ -553,7 +554,7 @@ consecutive_declines <- data_long %>%
   select(ageasentered, year_quarter_list)
 ```
 
-Every time an age group has two or more quarters in decline in a row:
+**Every time an age group has two or more quarters in decline in a row:**
 ```{r, echo=FALSE}
 print(consecutive_declines)
 ```
@@ -578,9 +579,8 @@ net_new_vs_new <- data %>%
   summarise(total_cumulative = sum(cumulative, na.rm = TRUE), .groups = "drop") %>%
   pivot_wider(names_from = indicator, values_from = total_cumulative, values_fill = NA)
 
-# Identify SNUs where net new patients are less than newly initiated patients
 net_new_less_than_new <- net_new_vs_new %>%
-  filter(TX_NET_NEW < TX_NEW) # Filter to only when NET_NEW is less than NEW
+  filter(TX_NET_NEW < TX_NEW)
 ```
 
 ```{r, echo=FALSE}
@@ -606,72 +606,95 @@ net_new_less_than_new_qtr
 ## 7. Are any sub-national units (SNUs) lagging behind with getting a majority of patients onto 6 months or more of multi-month dispensing ( MMD) of treatment?
 
 ```{r}
-arv_categories <- c(
-  "ARV Dispensing Quantity - 3 to 5 months",
-  "ARV Dispensing Quantity - 6 or more months",
-  "ARV Dispensing Quantity - Less than 3 months"
-)
-
-# Filter data for TX_CURR indicator in Q3 of 2061 and relevant ARV dispensing categories
-q7 <- data_long %>%
+df_tx <- data %>%
   filter(
     indicator == "TX_CURR",
     fiscal_year == 2061,
-    quarter == 3,
-    otherdisaggregate %in% arv_categories
+    str_detect(standardizeddisaggregate, "Total")
+  ) %>%
+  count(snu1, wt = cumulative, name = "tx_curr")
+
+q7_fy <- data %>%
+  filter(
+    indicator == "TX_CURR",
+    fiscal_year == 2061,
+    standardizeddisaggregate == "Age/Sex/ARVDispense/HIVStatus"
   ) %>%
   group_by(snu1, otherdisaggregate) %>%
+  summarise(total = sum(cumulative, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = otherdisaggregate,
+    values_from = total,
+    values_fill = list(total = 0) # Ensures missing categories are treated as 0
+  ) %>%
+  left_join(df_tx, by = join_by(snu1)) %>%
+  mutate(
+    less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
+    total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
+    share_denom_tx_curr = paste0(round((`ARV Dispensing Quantity - 6 or more months` / tx_curr) * 100, 1), "%"),
+    share_denom_arv = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
+  ) %>%
+  select(snu1, `ARV Dispensing Quantity - 3 to 5 months`,
+  `ARV Dispensing Quantity - 6 or more months`,
+  `ARV Dispensing Quantity - Less than 3 months`, share_denom_tx_curr, share_denom_arv)
+```
+
+```{r}
+q7_fy
+```
+
+
+```{r}
+df_tx_qtr <- data_long %>%
+  filter(
+    indicator == "TX_CURR",
+    fiscal_year == 2061,
+    str_detect(standardizeddisaggregate, "Total")
+  ) %>%
+  group_by(quarter) %>%
+  count(snu1, wt = value, name = "tx_curr")
+
+q7_fy_qtr <- data_long %>%
+  filter(
+    indicator == "TX_CURR",
+    fiscal_year == 2061,
+    standardizeddisaggregate == "Age/Sex/ARVDispense/HIVStatus"
+  ) %>%
+  group_by(snu1, quarter, otherdisaggregate) %>%
   summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
   pivot_wider(
     names_from = otherdisaggregate,
     values_from = total,
     values_fill = list(total = 0) # Ensures missing categories are treated as 0
   ) %>%
+  left_join(df_tx_qtr, by = join_by(snu1, quarter)) %>%
   mutate(
     less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
     total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
-    share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
+    share_denom_tx_curr = paste0(round((`ARV Dispensing Quantity - 6 or more months` / tx_curr) * 100, 1), "%"),
+    share_denom_arv = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
   ) %>%
-  select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)
-```
-
-```{r, echo=FALSE}
-print(q7)
-```
-It appears that `Midwest` and `Northwest` are lagging below 50% 6 month or more MMD in `FY2061 Q3`, our most recent quarter.
-
-```{r}
-# Function to analyze ARV dispensing data for a given quarter
-analyze_arv_dispensing <- function(data_long, qtr) {
-  filtered_data <- data_long %>%
-    filter(
-      indicator == "TX_CURR",
-      fiscal_year == 2061,
-      quarter == qtr,
-      otherdisaggregate %in% arv_categories
-    )
-  
-  filtered_data %>%
-    group_by(snu1, otherdisaggregate) %>%
-    summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
-    pivot_wider(
-      names_from = otherdisaggregate,
-      values_from = total,
-      values_fill = list(total = 0)
-    ) %>%
-    mutate(
-      less_than_6_months = `ARV Dispensing Quantity - 3 to 5 months` + `ARV Dispensing Quantity - Less than 3 months`,
-      total_arv = less_than_6_months + `ARV Dispensing Quantity - 6 or more months`,
-      share_6_or_more_months = paste0(round((`ARV Dispensing Quantity - 6 or more months` / total_arv) * 100, 1), "%")
-    ) %>%
-    select(snu1, less_than_6_months, `ARV Dispensing Quantity - 6 or more months`, share_6_or_more_months)
-}
+  select(quarter, snu1, `ARV Dispensing Quantity - 3 to 5 months`,
+  `ARV Dispensing Quantity - 6 or more months`,
+  `ARV Dispensing Quantity - Less than 3 months`, share_denom_tx_curr, share_denom_arv)
 ```
 
 This was the case in the previous two quarters as well.
 ```{r, echo=FALSE}
-print(analyze_arv_dispensing(data_long, 2))
-print(q7_q1 <- analyze_arv_dispensing(data_long, 1))
+q7_fy_qtr
+```
+To undersand the difference between the two share values, we look at who is providing ARVDispense. It looks like MMD data is provided (Total Numerator = Age/Sex/ARVDispense/HIVStatus)for all in Midwest and Pacific Coast, but not for Northwest and South Atlantic.  
+```{r}
+  data %>%
+    filter(
+      indicator == "TX_CURR",
+      fiscal_year == 2061,
+      str_detect(standardizeddisaggregate, "ARV|Total")
+    ) %>%
+    count(snu1, indicator, standardizeddisaggregate, wt = cumulative) %>%
+    pivot_wider(names_from = standardizeddisaggregate, values_from = n) %>%
+    mutate(diff = .[[3]] - .[[4]]) %>%
+  select(snu1, diff, `Age/Sex/ARVDispense/HIVStatus`, `Total Numerator`)
 ```
 
 ## 8. Do we see any differences in viral load coverage (VLC) by age and sex for the current year?
